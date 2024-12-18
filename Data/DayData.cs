@@ -2,8 +2,9 @@
 {
     public class DayData
     {
+        public string Month { get; set; }
         public string Day  { get; set; }
-        public string Karl { get; set; }
+        public string Container { get; set; }
     }
 
 }

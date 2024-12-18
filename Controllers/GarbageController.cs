@@ -2,77 +2,143 @@
 using HtmlAgilityPack;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using System.Globalization;
 using System.Linq;
+using iTextSharp.text.pdf;
+using iTextSharp.text.pdf.parser;
+using SimpleFeedReader;
+using System.Net;
+using System.Text.RegularExpressions;
+using Microsoft.VisualBasic;
 
 namespace garbage_collectionAPI.Controllers
 {
     [ApiController]
-    [Route("api/garbage")]
+    [Route("api/")]
+
+    // TODO: Create model and add name of the place of military training. 
     public class GarbageController : Controller
     {
         private readonly HttpClient _httpClient;
+        public static DateTime Month = DateTime.Now;
+        public DateTime NextMonth = Month.AddMonths(1);
 
         public GarbageController(HttpClient httpClient)
         {
             _httpClient = httpClient;
         }
 
-        [HttpGet ("b")]
-        public async Task<IActionResult> GetGarbageInfo()
+        [HttpGet("military/")]
+        public async Task<IActionResult> GetMilitaryTrainings()
         {
-            var response = await _httpClient.GetAsync("\r\nhttps://webbservice.indecta.se/kunder/sjobo/kalender/basfiler/onlinekalender.php?hsG=Norra+Eggelstadsv%E4gen+57&hsO=L%F6vestad");
-            if (response.IsSuccessStatusCode)
+            Dictionary<string, string> avlysningar = new Dictionary<string, string>();
+            List<string> datesAndTimes = new List<string>();
+
+            var reader1 = new FeedReader();
+            var items = reader1.RetrieveFeed("https://www.forsvarsmakten.se/sv/aktuellt/viktiga-meddelanden/skjutfalt-och-avlysningar/bjorka-ovningsfalt/feed.rss");
+
+            foreach (var i in items)
             {
-                var html = await response.Content.ReadAsStringAsync();
-                var htmlDoc = new HtmlDocument();
-
-                htmlDoc.LoadHtml(html);
-
-                // Find rows that contain styleMonthName
-                var rows = htmlDoc.DocumentNode.SelectNodes("//tr[td[contains(@class, 'styleMonthName')] or div[contains(@class, 'styleInteIdag')]]");
-
-
-                var result = rows.Select(row => row.OuterHtml).ToList();
-
-                var data = await response.Content.ReadAsStringAsync();
-                return Ok(result); // Returning data as a JSON string
+                if (i.Title.StartsWith("a"))
+                    avlysningar.Add(i.Title, null);
             }
-            else
+
+            foreach (var item in avlysningar.Keys)
             {
-                return StatusCode((int)response.StatusCode, "Error fetching data");
+                // URL to the PDF
+                string pdfUrl = $"https://www.forsvarsmakten.se/siteassets/skjutfalt-avlysningar/bjorka/{item}";
+
+                try
+                {
+                    // Download the PDF from the URL
+                    using (WebClient webClient = new WebClient())
+                    {
+                        byte[] pdfData = webClient.DownloadData(pdfUrl);
+
+                        // Open the PDF
+                        using (PdfReader reader = new PdfReader(pdfData))
+                        {
+                            List<string> allPageTexts = new List<string>();
+
+                            for (int pageNum = 1; pageNum <= reader.NumberOfPages; pageNum++)
+                            {
+                                // Extract text from each page using PdfTextExtractor
+                                string pageText = PdfTextExtractor.GetTextFromPage(reader, pageNum);
+                                allPageTexts.Add(pageText);
+                            }
+
+                            // Combine all page texts into a single string for the specific item
+                            avlysningar[item] = string.Join("\n", allPageTexts);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("An error occurred: " + ex.Message);
+                }
             }
-           
 
-            // <td width="80%" colspan="5" class="styleMonthName">December - 2025</td>
-            // <div class="styleInteIdag">26</div>
-            //<span class="dagMedTomClass1">1</span></td>
-     
+            foreach (var item in avlysningar)
+            {
+                // Regex pattern to match lines with dates and times
+                string pattern = @"(\d{4}-\d{2}-\d{2}) (\d{4}-\d{4})";
+                var matches = Regex.Matches(item.Value, pattern);
 
+                if (matches.Count > 0)
+                {
+                    foreach (Match match in matches)
+                    {
+                        if (match.Success)
+                        {
+                            string date = match.Groups[1].Value;
+                            string time = match.Groups[2].Value;
+                            datesAndTimes.Add($"Datum: {date} Tid: {time}");
+                        }
+                    }
+                }
+                else
+                {
+                    // Optionally handle case where no dates and times are found
+                    datesAndTimes.Add("No dates and times found.");
+                }
+            }
+
+            return Ok(datesAndTimes);
         }
-        [HttpGet]
+
+        [HttpGet("garbage")]
         public async Task<IActionResult> GetMonthlyGarbage()
         {
-            List<DayData> datesAndKärls = new List<DayData>();  
-            var response = await _httpClient.GetAsync("\r\nhttps://webbservice.indecta.se/kunder/sjobo/kalender/basfiler/onlinekalender.php?hsG=Norra+Eggelstadsv%E4gen+57&hsO=L%F6vestad");
+            // month now
+            var month = Month.ToString("MMMM", new CultureInfo("sv-SE"));
+            var monthRight = char.ToUpper(month[0]) + month.Substring(1).ToLower();
+
+            // next month
+            var nextMonth = Month.ToString("MMMM", new CultureInfo("sv-SE"));
+            var nextMonthRight = char.ToUpper(month[0]) + month.Substring(1).ToLower();
+
+            List<DayData> datesAndKärls = new List<DayData>();
+            var response = await _httpClient.GetAsync("https://webbservice.indecta.se/kunder/sjobo/kalender/basfiler/onlinekalender.php?hsG=Norra+Eggelstadsv%E4gen+57&hsO=L%F6vestad");
+
             if (response.IsSuccessStatusCode)
             {
                 string html = await response.Content.ReadAsStringAsync();
                 var htmlDoc = new HtmlDocument();
                 htmlDoc.LoadHtml(html);
 
-                // Select rows for February - 2025
-                var rows = htmlDoc.DocumentNode.SelectNodes("//tr[td[contains(@class, 'styleMonthName') and contains(text(), 'Februari - 2025')]]");
+                // Select rows for the current month
+                var rows = htmlDoc.DocumentNode.SelectNodes($"//tr[td[contains(@class, 'styleMonthName') and contains(text(), '{monthRight} - 2024')]]");
 
                 if (rows != null)
                 {
                     var allRows = new List<string>();
 
-                    // Add February rows
+                    // Add current month rows
                     allRows.AddRange(rows.Select(row => row.OuterHtml));
 
-                    // Extract rows until Mars - 2025
+                    // Extract rows until next month
                     var nextRow = rows.Last().NextSibling;
-                    while (nextRow != null && !nextRow.InnerHtml.Contains("styleMonthName") && !nextRow.InnerHtml.Contains("Mars - 2025"))
+                    while (nextRow != null && !nextRow.InnerHtml.Contains("styleMonthName") && !nextRow.InnerHtml.Contains($"{nextMonthRight} - 2025"))
                     {
                         allRows.Add(nextRow.OuterHtml);
                         nextRow = nextRow.NextSibling;
@@ -91,12 +157,11 @@ namespace garbage_collectionAPI.Controllers
                         DayData dayData = new DayData()
                         {
                             Day = date,
-                            Karl = kärlNumber
+                            Container = kärlNumber,
+                            Month = monthRight
                         };
-                        datesAndKärls.Add(dayData); 
+                        datesAndKärls.Add(dayData);
                     }
-             
-
 
                     return Ok(datesAndKärls); // Returning list of rows as a JSON array
                 }
@@ -108,72 +173,6 @@ namespace garbage_collectionAPI.Controllers
             else
             {
                 return StatusCode((int)response.StatusCode, "Error fetching data");
-            }
-
-        }
-
-
-        // GET: GarbageController
-        public ActionResult Index()
-        {
-            return View();
-        }
-
-
-        // POST: GarbageController/Create
-        [HttpPost]
-        [ValidateAntiForgeryToken]
-        public ActionResult Create(IFormCollection collection)
-        {
-            try
-            {
-                return RedirectToAction(nameof(Index));
-            }
-            catch
-            {
-                return View();
-            }
-        }
-
-        // GET: GarbageController/Edit/5
-        public ActionResult Edit(int id)
-        {
-            return View();
-        }
-
-        // POST: GarbageController/Edit/5
-        [HttpPost]
-        [ValidateAntiForgeryToken]
-        public ActionResult Edit(int id, IFormCollection collection)
-        {
-            try
-            {
-                return RedirectToAction(nameof(Index));
-            }
-            catch
-            {
-                return View();
-            }
-        }
-
-        // GET: GarbageController/Delete/5
-        public ActionResult Delete(int id)
-        {
-            return View();
-        }
-
-        // POST: GarbageController/Delete/5
-        [HttpPost]
-        [ValidateAntiForgeryToken]
-        public ActionResult Delete(int id, IFormCollection collection)
-        {
-            try
-            {
-                return RedirectToAction(nameof(Index));
-            }
-            catch
-            {
-                return View();
             }
         }
     }
